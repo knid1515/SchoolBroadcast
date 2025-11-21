@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ระบบเสียงตามสาย (Google Sheets Version)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600&display=swap');
+        body { font-family: 'Sarabun', sans-serif; }
+        .playing-row { background-color: #d1fae5; animation: pulse 2s infinite; }
+        .loading-overlay { background: rgba(255,255,255,0.8); }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 min-h-screen flex flex-col">
+
+    <script>
+        // ==========================================
+        // วาง URL ของ Google Apps Script ที่นี่
+        // ==========================================
+        const SHEET_API_URL = 'https://script.google.com/macros/s/AKfycbxfo-WqFHW6j6zelG6ls4taMGMmqsWCD8b8n6MtTFjsaw1dyWknI4GAboiAHMmReWgYAQ/exec'; 
+    </script>
+
+    <header class="bg-indigo-600 text-white p-4 shadow-lg sticky top-0 z-50">
+        <div class="container mx-auto flex justify-between items-center">
+            <h1 class="text-xl md:text-2xl font-bold"><i class="fas fa-cloud-upload-alt mr-2"></i>เสียงตามสาย (Sync Sheet)</h1>
+            <div class="text-right">
+                <div id="current-time" class="text-2xl font-mono font-bold">00:00:00</div>
+                <div id="connection-status" class="text-xs">กำลังเชื่อมต่อ...</div>
+            </div>
+        </div>
+    </header>
+
+    <main class="container mx-auto p-4 flex-grow relative">
+        
+        <div id="loading" class="loading-overlay absolute inset-0 z-40 flex justify-center items-center hidden">
+            <div class="text-center">
+                <i class="fas fa-spinner fa-spin text-4xl text-indigo-600"></i>
+                <p class="mt-2 text-indigo-600 font-bold">กำลังบันทึกข้อมูล...</p>
+            </div>
+        </div>
+
+        <div id="system-status" class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 mb-6 flex justify-between items-center shadow-sm">
+            <div><p class="font-bold">สถานะ: รอเปิดเสียง</p></div>
+            <button onclick="enableAudioContext()" class="bg-yellow-500 hover:bg-yellow-600 text-white px-4 py-2 rounded shadow">
+                <i class="fas fa-volume-up mr-2"></i>เปิดใช้งานเสียง
+            </button>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-12 gap-6">
+            
+            <div class="md:col-span-4 bg-white p-6 rounded-lg shadow-md h-fit sticky top-24">
+                <h2 id="form-title" class="text-xl font-bold mb-4 text-indigo-600 border-b pb-2">เพิ่มรายการใหม่</h2>
+                <form id="schedule-form" class="space-y-4">
+                    <input type="hidden" id="input-id"> <div>
+                        <label class="block text-sm font-medium text-gray-700">ชื่อกิจกรรม</label>
+                        <input type="text" id="input-name" placeholder="เช่น เคารพธงชาติ" required class="mt-1 block w-full border p-2 rounded focus:ring-indigo-500 focus:border-indigo-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">เวลา (น:ท)</label>
+                        <input type="time" id="input-time" required class="mt-1 block w-full border p-2 rounded">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700">เลือกไฟล์เสียง</label>
+                        <input type="file" id="input-file" accept="audio/*" class="mt-1 block w-full text-sm file:bg-indigo-50 file:text-indigo-700 file:border-0 file:px-4 file:py-2 file:rounded-full hover:file:bg-indigo-100">
+                        <p class="text-xs text-gray-500 mt-1">* จำเป็นต้องเลือกใหม่เมื่อเปลี่ยนเครื่อง</p>
+                    </div>
+                    
+                    <div class="flex space-x-2">
+                        <button type="submit" id="btn-submit" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded transition">
+                            <i class="fas fa-plus mr-1"></i> บันทึก
+                        </button>
+                        <button type="button" id="btn-cancel" onclick="resetForm()" class="hidden flex-none bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded">
+                            ยกเลิก
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <div class="md:col-span-8 bg-white p-6 rounded-lg shadow-md">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-bold text-gray-700">ตารางประกาศ (จาก Sheets)</h2>
+                    <button onclick="fetchSchedules()" class="text-indigo-600 hover:text-indigo-800 text-sm"><i class="fas fa-sync-alt"></i> รีเฟรชข้อมูล</button>
+                </div>
+                
+                <div class="overflow-x-auto">
+                    <table class="min-w-full">
+                        <thead>
+                            <tr class="bg-gray-100 text-gray-600 uppercase text-xs leading-normal">
+                                <th class="py-3 px-4 text-left">เวลา</th>
+                                <th class="py-3 px-4 text-left">กิจกรรม</th>
+                                <th class="py-3 px-4 text-left">ไฟล์เสียง</th>
+                                <th class="py-3 px-4 text-center">จัดการ</th>
+                            </tr>
+                        </thead>
+                        <tbody id="schedule-list" class="text-gray-600 text-sm font-light">
+                            </tbody>
+                    </table>
+                    <div id="empty-state" class="text-center py-8 text-gray-400 hidden">
+                        กำลังโหลดข้อมูลจาก Google Sheets...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <audio id="main-audio-player"></audio>
+
+    <script>
+        // --- Variables ---
+        let schedules = [];
+        let audioContextEnabled = false;
+        const audioPlayer = document.getElementById('main-audio-player');
+        const loadingDiv = document.getElementById('loading');
+
+        // --- Initialization ---
+        document.addEventListener('DOMContentLoaded', () => {
+            if(SHEET_API_URL === 'YOUR_WEB_APP_URL_HERE') {
+                alert("กรุณาใส่ URL ของ Google Apps Script ในโค้ดบรรทัดที่ 28 ก่อนใช้งาน");
+                return;
+            }
+            fetchSchedules();
+            setInterval(updateClock, 1000);
+            setInterval(checkSchedule, 1000);
+        });
+
+        // --- API Functions (Google Sheets) ---
+        async function fetchSchedules() {
+            showLoading(true);
+            try {
+                const response = await fetch(SHEET_API_URL);
+                const data = await response.json();
+                
+                // ผสานข้อมูลจาก Sheet กับไฟล์เสียงที่ผู้ใช้เลือกไว้ใน Session ปัจจุบัน
+                // (เพราะ Sheet ไม่เก็บไฟล์เสียง เราจึงต้องคงค่า fileUrl เดิมไว้ถ้ารายการเดิมยังอยู่)
+                const mergedData = data.map(remoteItem => {
+                    const existingLocal = schedules.find(s => s.id == remoteItem.id);
+                    return {
+                        ...remoteItem,
+                        fileUrl: existingLocal ? existingLocal.fileUrl : null, // คง URL ไว้ถ้ามี
+                        played: false
+                    };
+                });
+
+                schedules = mergedData.sort((a, b) => a.time.localeCompare(b.time));
+                renderSchedule();
+                document.getElementById('connection-status').innerHTML = '<span class="text-green-300"><i class="fas fa-wifi"></i> Online</span>';
+            } catch (error) {
+                console.error(error);
+                document.getElementById('connection-status').innerHTML = '<span class="text-red-300">Connection Error</span>';
+                alert("ไม่สามารถดึงข้อมูลจาก Sheet ได้");
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        async function saveToSheet(action, payload) {
+            showLoading(true);
+            // ใช้ no-cors สำหรับ Web App (จะไม่ได้รับ response body กลับมาตรงๆ แต่ทำงานได้)
+            // หรือใช้ proxy แต่เพื่อให้ง่าย ใช้ mode no-cors และสมมติว่าสำเร็จ
+            try {
+                await fetch(SHEET_API_URL, {
+                    method: 'POST',
+                    mode: 'no-cors', // สำคัญ: แก้ปัญหา CORS เบื้องต้น
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action, ...payload })
+                });
+                
+                // เนื่องจาก no-cors ไม่คืนค่า ให้รอสักนิดแล้ว fetch ใหม่
+                setTimeout(() => {
+                    fetchSchedules();
+                    resetForm();
+                }, 1500);
+                
+            } catch (error) {
+                alert("เกิดข้อผิดพลาดในการบันทึก: " + error);
+                showLoading(false);
+            }
+        }
+
+        // --- UI & Logic Functions ---
+        document.getElementById('schedule-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const id = document.getElementById('input-id').value;
+            const name = document.getElementById('input-name').value;
+            const time = document.getElementById('input-time').value;
+            const fileInput = document.getElementById('input-file');
+
+            // ถ้าเป็นการสร้างใหม่ ต้องมีไฟล์ / ถ้าแก้ไข ไม่จำเป็น
+            if (!id && fileInput.files.length === 0) {
+                alert("กรุณาเลือกไฟล์เสียง");
+                return;
+            }
+
+            let fileName = "ไม่มีไฟล์";
+            
+            // กรณีเพิ่มรายการในหน่วยความจำชั่วคราว (เพื่อให้ UI อัปเดตทันทีระหว่างรอ Sheet)
+            if (fileInput.files.length > 0) {
+                fileName = fileInput.files[0].name;
+                // เราไม่ส่ง fileUrl ไป Sheet แต่เราจะเก็บไว้ใน schedules array หลัง fetch
+            }
+
+            if (id) {
+                // Edit Mode
+                saveToSheet('update', { id, name, time, fileName: fileInput.files.length > 0 ? fileName : document.getElementById('input-file').getAttribute('data-prev-name') });
+            } else {
+                // Create Mode
+                const newId = Date.now();
+                saveToSheet('create', { id: newId, name, time, fileName });
+            }
+        });
+
+        function editItem(id) {
+            const item = schedules.find(s => s.id == id);
+            if (!item) return;
+
+            document.getElementById('input-id').value = item.id;
+            document.getElementById('input-name').value = item.name;
+            document.getElementById('input-time').value = item.time;
+            document.getElementById('input-file').setAttribute('data-prev-name', item.fileName); // เก็บชื่อเดิมไว้
+            
+            // เปลี่ยนปุ่ม
+            document.getElementById('form-title').innerText = "แก้ไขรายการ";
+            const btn = document.getElementById('btn-submit');
+            btn.innerHTML = '<i class="fas fa-save mr-1"></i> อัปเดต';
+            btn.classList.replace('bg-indigo-600', 'bg-orange-500');
+            btn.classList.replace('hover:bg-indigo-700', 'hover:bg-orange-600');
+            document.getElementById('btn-cancel').classList.remove('hidden');
+        }
+
+        function deleteItem(id) {
+            if(confirm("ต้องการลบรายการนี้จาก Sheet ใช่หรือไม่?")) {
+                saveToSheet('delete', { id });
+            }
+        }
+
+        function resetForm() {
+            document.getElementById('schedule-form').reset();
+            document.getElementById('input-id').value = '';
+            document.getElementById('form-title').innerText = "เพิ่มรายการใหม่";
+            const btn = document.getElementById('btn-submit');
+            btn.innerHTML = '<i class="fas fa-plus mr-1"></i> บันทึก';
+            btn.classList.replace('bg-orange-500', 'bg-indigo-600');
+            btn.classList.replace('hover:bg-orange-600', 'hover:bg-indigo-700');
+            document.getElementById('btn-cancel').classList.add('hidden');
+        }
+
+        function attachFile(id, input) {
+            if (input.files.length > 0) {
+                const file = input.files[0];
+                const index = schedules.findIndex(s => s.id == id);
+                if (index !== -1) {
+                    schedules[index].fileUrl = URL.createObjectURL(file);
+                    schedules[index].fileName = file.name; // Update name locally
+                    renderSchedule(); // Re-render to remove red text
+                }
+            }
+        }
+
+        function renderSchedule() {
+            const list = document.getElementById('schedule-list');
+            list.innerHTML = '';
+            
+            if (schedules.length === 0) {
+                document.getElementById('empty-state').classList.remove('hidden');
+                document.getElementById('empty-state').innerText = "ไม่พบข้อมูลใน Sheet";
+            } else {
+                document.getElementById('empty-state').classList.add('hidden');
+                
+                schedules.forEach(item => {
+                    const hasFile = !!item.fileUrl;
+                    const row = document.createElement('tr');
+                    row.id = `row-${item.id}`;
+                    row.className = "border-b border-gray-200 hover:bg-gray-50";
+                    
+                    row.innerHTML = `
+                        <td class="py-3 px-4 font-bold text-indigo-600 text-lg">${item.time}</td>
+                        <td class="py-3 px-4">
+                            <div class="font-medium text-gray-900">${item.name}</div>
+                        </td>
+                        <td class="py-3 px-4">
+                            <div class="flex flex-col">
+                                <span class="text-xs ${hasFile ? 'text-green-600' : 'text-red-500'}">
+                                    ${hasFile ? '<i class="fas fa-check"></i> พร้อมเล่น' : '<i class="fas fa-exclamation-triangle"></i> รอไฟล์'}
+                                </span>
+                                <span class="text-xs text-gray-500 truncate w-32">${item.fileName}</span>
+                                ${!hasFile ? `<label class="cursor-pointer bg-gray-200 hover:bg-gray-300 text-xs px-2 py-1 rounded mt-1 text-center w-fit">
+                                    เลือกไฟล์
+                                    <input type="file" class="hidden" onchange="attachFile('${item.id}', this)">
+                                </label>` : ''}
+                            </div>
+                        </td>
+                        <td class="py-3 px-4 text-center">
+                            <button onclick="editItem('${item.id}')" class="text-orange-500 hover:text-orange-700 mx-1" title="แก้ไข"><i class="fas fa-edit"></i></button>
+                            <button onclick="deleteItem('${item.id}')" class="text-red-500 hover:text-red-700 mx-1" title="ลบ"><i class="fas fa-trash"></i></button>
+                            ${hasFile ? `<button onclick="previewSound('${item.fileUrl}')" class="text-indigo-500 mx-1"><i class="fas fa-play"></i></button>` : ''}
+                        </td>
+                    `;
+                    list.appendChild(row);
+                });
+            }
+        }
+
+        // --- Common Functions (Clock & Audio) ---
+        function updateClock() {
+            const now = new Date();
+            document.getElementById('current-time').innerText = now.toLocaleTimeString('th-TH', { hour12: false });
+        }
+
+        function enableAudioContext() {
+            audioPlayer.play().then(() => audioPlayer.pause()).catch(()=>{});
+            audioContextEnabled = true;
+            document.getElementById('system-status').className = "bg-green-100 border-l-4 border-green-500 text-green-700 p-4 mb-6 flex justify-between items-center shadow-sm";
+            document.getElementById('system-status').innerHTML = '<div><p class="font-bold">ระบบพร้อมทำงาน</p></div>';
+        }
+
+        function checkSchedule() {
+            if (!audioContextEnabled) return;
+            const now = new Date();
+            if (now.getSeconds() !== 0) return; // Check every minute exactly at 00 sec
+
+            const currentTime = now.toLocaleTimeString('th-TH', { hour12: false, hour: '2-digit', minute: '2-digit' });
+
+            schedules.forEach(item => {
+                if (item.time === currentTime && !item.played && item.fileUrl) {
+                    playAnnouncement(item);
+                }
+            });
+        }
+
+        function playAnnouncement(item) {
+            const row = document.getElementById(`row-${item.id}`);
+            if (row) row.classList.add('playing-row');
+            
+            audioPlayer.src = item.fileUrl;
+            audioPlayer.play();
+            
+            audioPlayer.onended = () => {
+                if (row) row.classList.remove('playing-row');
+                item.played = true;
+            };
+        }
+
+        function previewSound(url) {
+            const tmp = new Audio(url);
+            tmp.play();
+        }
+
+        function showLoading(isLoading) {
+            loadingDiv.classList.toggle('hidden', !isLoading);
+        }
+    </script>
+</body>
+</html>
